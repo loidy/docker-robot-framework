@@ -45,7 +45,7 @@ ROBOT_EXIT_CODE=$?
 if [ ${AWS_UPLOAD_TO_S3} = true ]
 then
     echo "Uploading report to AWS S3..."
-    aws s3 sync $ROBOT_REPORTS_FINAL_DIR/ s3://${AWS_BUCKET_NAME}/robot-reports/
+    aws s3 cp --recursive $ROBOT_REPORTS_FINAL_DIR/ s3://${AWS_BUCKET_NAME}/robot-reports/
     echo "Reports have been successfully uploaded to AWS S3!"
 fi
 
