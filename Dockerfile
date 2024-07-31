@@ -1,7 +1,10 @@
-FROM fedora:36
+FROM fedora:40
 
-MAINTAINER Paul Podgorsek <ppodgorsek@users.noreply.github.com>
+LABEL authors     Paul Podgorsek
 LABEL description Robot Framework in Docker.
+
+# Set the Python dependencies' directory environment variable
+ENV ROBOT_DEPENDENCY_DIR /opt/robotframework/dependencies
 
 # Set the reports directory environment variable
 ENV ROBOT_REPORTS_DIR /opt/robotframework/reports
@@ -29,24 +32,24 @@ ENV ROBOT_UID 1000
 ENV ROBOT_GID 1000
 
 # Dependency versions
-ENV ALPINE_GLIBC 2.35-r0
-ENV AWS_CLI_VERSION 1.25.81
+ENV AWS_CLI_VERSION 1.33.23
 ENV AXE_SELENIUM_LIBRARY_VERSION 2.1.6
-ENV BROWSER_LIBRARY_VERSION 14.0.0
-ENV CHROMIUM_VERSION 103.0
-ENV DATABASE_LIBRARY_VERSION 1.2.4
-ENV DATADRIVER_VERSION 1.6.0
+ENV BROWSER_LIBRARY_VERSION 18.6.3
+ENV CHROME_VERSION 126.0.6478.126
+ENV DATABASE_LIBRARY_VERSION 1.4.4
+ENV DATADRIVER_VERSION 1.11.2
 ENV DATETIMETZ_VERSION 1.0.6
+ENV MICROSOFT_EDGE_VERSION 126.0.2592.87
 ENV FAKER_VERSION 5.0.0
-ENV FIREFOX_VERSION 104.0
+ENV FIREFOX_VERSION 128.0
 ENV FTP_LIBRARY_VERSION 1.9
-ENV GECKO_DRIVER_VERSION v0.30.0
-ENV IMAP_LIBRARY_VERSION 0.4.5
+ENV GECKO_DRIVER_VERSION v0.33.0
+ENV IMAP_LIBRARY_VERSION 0.4.6
 ENV JSON_LIBRARY_VERSION 0.5
-ENV PABOT_VERSION 2.7.0
-ENV REQUESTS_VERSION 0.9.3
-ENV ROBOT_FRAMEWORK_VERSION 5.0.1
-ENV SELENIUM_LIBRARY_VERSION 6.0.0
+ENV PABOT_VERSION 2.18.0
+ENV REQUESTS_VERSION 0.9.7
+ENV ROBOT_FRAMEWORK_VERSION 7.0.1
+ENV SELENIUM_LIBRARY_VERSION 6.2.0
 ENV SSH_LIBRARY_VERSION 3.8.0
 ENV XVFB_VERSION 1.20
 
@@ -54,26 +57,31 @@ ENV XVFB_VERSION 1.20
 ENV AWS_UPLOAD_TO_S3 false
 
 # Prepare binaries to be executed
-COPY bin/chromedriver.sh /opt/robotframework/bin/chromedriver
-COPY bin/chromium-browser.sh /opt/robotframework/bin/chromium-browser
+COPY bin/chromedriver.sh /opt/robotframework/drivers/chromedriver
+COPY bin/chrome.sh /opt/robotframework/bin/chrome
 COPY bin/run-tests-in-virtual-screen.sh /opt/robotframework/bin/
 
 # Install system dependencies
 RUN dnf upgrade -y --refresh \
   && dnf install -y \
-    chromedriver-${CHROMIUM_VERSION}* \
-    chromium-${CHROMIUM_VERSION}* \
+    dbus-glib \
+    dnf-plugins-core \
     firefox-${FIREFOX_VERSION}* \
-    npm \
+    gcc \
+    gcc-c++ \
     nodejs \
+    npm \
     python3-pip \
+    python3-pyyaml \
     tzdata \
+    wget \
     xorg-x11-server-Xvfb-${XVFB_VERSION}* \
   && dnf clean all
 
-# FIXME: below is a workaround, as the path is ignored
-RUN mv /usr/lib64/chromium-browser/chromium-browser /usr/lib64/chromium-browser/chromium-browser-original \
-  && ln -sfv /opt/robotframework/bin/chromium-browser /usr/lib64/chromium-browser/chromium-browser
+# Install Chrome for Testing
+# https://developer.chrome.com/blog/chrome-for-testing/
+RUN npx @puppeteer/browsers install chrome@${CHROME_VERSION} \
+  && npx @puppeteer/browsers install chromedriver@${CHROME_VERSION}
 
 # Install Robot Framework and associated libraries
 RUN pip3 install \
@@ -96,26 +104,39 @@ RUN pip3 install \
   PyYAML \
   stripe \
   # Install awscli to be able to upload test reports to AWS S3
-  awscli==$AWS_CLI_VERSION
+  awscli==$AWS_CLI_VERSION \
+  # Install an older Selenium version to avoid issues when running tests
+  # https://github.com/robotframework/SeleniumLibrary/issues/1835
+  selenium==4.9.0
 
 # Gecko drivers
-RUN dnf install -y \
-    wget \
-
-  # Download Gecko drivers directly from the GitHub repository
-  && wget -q "https://github.com/mozilla/geckodriver/releases/download/$GECKO_DRIVER_VERSION/geckodriver-$GECKO_DRIVER_VERSION-linux64.tar.gz" \
+# Download Gecko drivers directly from the GitHub repository
+RUN wget -q "https://github.com/mozilla/geckodriver/releases/download/$GECKO_DRIVER_VERSION/geckodriver-$GECKO_DRIVER_VERSION-linux64.tar.gz" \
   && tar xzf geckodriver-$GECKO_DRIVER_VERSION-linux64.tar.gz \
   && mkdir -p /opt/robotframework/drivers/ \
   && mv geckodriver /opt/robotframework/drivers/geckodriver \
-  && rm geckodriver-$GECKO_DRIVER_VERSION-linux64.tar.gz \
+  && rm geckodriver-$GECKO_DRIVER_VERSION-linux64.tar.gz
 
+# Install Microsoft Edge & webdriver
+RUN rpm --import https://packages.microsoft.com/keys/microsoft.asc \
+  && dnf config-manager --add-repo https://packages.microsoft.com/yumrepos/edge \
+  && dnf install -y \
+    microsoft-edge-stable-${MICROSOFT_EDGE_VERSION} \
+    zip \
+  && wget -q "https://msedgedriver.azureedge.net/${MICROSOFT_EDGE_VERSION}/edgedriver_linux64.zip" \
+  && unzip edgedriver_linux64.zip -d edge \
+  && mv edge/msedgedriver /opt/robotframework/drivers/msedgedriver \
+  && rm -Rf edgedriver_linux64.zip edge/ \
+  # IMPORTANT: don't remove the wget package because it's a dependency of Microsoft Edge
   && dnf remove -y \
-    wget \
+    zip \
   && dnf clean all
 
-# Install the Node dependencies for the Browser library
+ENV PATH=/opt/microsoft/msedge:$PATH
+
 # FIXME: Playright currently doesn't support relying on system browsers, which is why the `--skip-browsers` parameter cannot be used here.
-RUN rfbrowser init
+# Additionally, it cannot run fully on any OS due to https://github.com/microsoft/playwright/issues/29559
+RUN rfbrowser init chromium firefox
 
 # Create the default report and work folders with the default user to avoid runtime issues
 # These folders are writeable by anyone, to ensure the user can be changed on the command line.
@@ -131,6 +152,11 @@ RUN chmod ugo+w /var/log \
 
 # Update system path
 ENV PATH=/opt/robotframework/bin:/opt/robotframework/drivers:$PATH
+
+# Ensure the directory for Python dependencies exists
+RUN mkdir -p ${ROBOT_DEPENDENCY_DIR} \
+  && chown ${ROBOT_UID}:${ROBOT_GID} ${ROBOT_DEPENDENCY_DIR} \
+  && chmod 777 ${ROBOT_DEPENDENCY_DIR}
 
 # Set up a volume for the generated reports
 VOLUME ${ROBOT_REPORTS_DIR}
